@@ -172,15 +172,16 @@ const LeaveManagement = () => {
 		setError('');
 
 		try {
-			if (type === 'approve') {
-				await leaveService.approve(selectedLeave._id, { adminRemarks: remarks });
-			} else {
-				await leaveService.reject(selectedLeave._id, { adminRemarks: remarks });
-			}
+			const { data } = type === 'approve'
+				? await leaveService.approve(selectedLeave._id, { adminRemarks: remarks })
+				: await leaveService.reject(selectedLeave._id, { adminRemarks: remarks });
+
+			const updatedLeave = data.leave || selectedLeave;
+			setSelectedLeave(updatedLeave);
+			setAllLeaves((current) => current.map((leave) => (leave._id === updatedLeave._id ? updatedLeave : leave)));
+			setLeaves((current) => current.map((leave) => (leave._id === updatedLeave._id ? updatedLeave : leave)));
 
 			await Promise.all([loadLeaves(), loadSummary()]);
-			const refreshedCurrent = (allLeaves.find((leave) => leave._id === selectedLeave._id) || leaves.find((leave) => leave._id === selectedLeave._id) || selectedLeave);
-			await loadDetail(refreshedCurrent);
 		} catch (err) {
 			setError(err.response?.data?.message || 'Unable to update leave request status.');
 		} finally {
