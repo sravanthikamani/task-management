@@ -177,9 +177,23 @@ const LeaveManagement = () => {
 				: await leaveService.reject(selectedLeave._id, { adminRemarks: remarks });
 
 			const updatedLeave = data.leave || selectedLeave;
-			setSelectedLeave(updatedLeave);
-			setAllLeaves((current) => current.map((leave) => (leave._id === updatedLeave._id ? updatedLeave : leave)));
-			setLeaves((current) => current.map((leave) => (leave._id === updatedLeave._id ? updatedLeave : leave)));
+			let detailLeave = updatedLeave;
+			let detailPreviousLeaves = previousLeaves;
+
+			try {
+				const detailResponse = await leaveService.detail(selectedLeave._id);
+				detailLeave = detailResponse.data?.leave || detailLeave;
+				detailPreviousLeaves = detailResponse.data?.previousLeaves || detailPreviousLeaves;
+			} catch {
+				// Keep optimistic state if detail reload fails.
+			}
+
+			setSelectedLeave(detailLeave);
+			setPreviousLeaves(detailPreviousLeaves);
+			setRemarks(detailLeave.adminRemarks || '');
+
+			setAllLeaves((current) => current.map((leave) => (leave._id === detailLeave._id ? detailLeave : leave)));
+			setLeaves((current) => current.map((leave) => (leave._id === detailLeave._id ? detailLeave : leave)));
 
 			await Promise.all([loadLeaves(), loadSummary()]);
 		} catch (err) {
