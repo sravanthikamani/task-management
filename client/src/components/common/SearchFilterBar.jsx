@@ -1,6 +1,7 @@
 const SearchFilterBar = ({
   search,
   setSearch,
+  searchPlaceholder = 'Search...',
   searchId = 'workspace-search',
   searchName = 'workspaceSearch',
   singleRowDesktop = false,
@@ -12,7 +13,7 @@ const SearchFilterBar = ({
       className={`form-field ${singleRowDesktop ? 'w-full' : controlsNoWrapOnDesktop ? 'md:w-56 md:flex-none xl:w-72' : 'md:max-w-sm'}`}
       id={searchId}
       name={searchName}
-      placeholder="Search..."
+      placeholder={searchPlaceholder}
       value={search}
       onChange={(event) => setSearch(event.target.value)}
     />

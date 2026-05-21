@@ -26,6 +26,8 @@ const ActionIcon = ({ title, children, tone = 'slate' }) => {
 };
 
 const EmployeeManagement = () => {
+  const employeeRowTones = ['bg-blue-100/65', 'bg-emerald-100/60', 'bg-amber-100/60', 'bg-rose-100/55', 'bg-violet-100/55'];
+
   const [employees, setEmployees] = useState([]);
   const [allEmployees, setAllEmployees] = useState([]);
   const [searchName, setSearchName] = useState('');
@@ -64,7 +66,6 @@ const EmployeeManagement = () => {
 
   const departments = useMemo(() => [...new Set(allEmployees.map((employee) => employee.department).filter(Boolean))], [allEmployees]);
   const designations = useMemo(() => [...new Set(allEmployees.map((employee) => employee.designation).filter(Boolean))], [allEmployees]);
-
   const setFilter = (key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
   };
@@ -93,26 +94,26 @@ const EmployeeManagement = () => {
 
   return (
     <ModulePage title="Employee Management" actions={<Link className="btn-primary" to="/admin/employees/add">Add employee</Link>}>
-      <SearchFilterBar search={searchName} setSearch={setSearchName}>
+      <SearchFilterBar search={searchName} setSearch={setSearchName} searchPlaceholder="Search by name" singleRowDesktop>
         <input
-          className="form-field md:max-w-xs"
-          placeholder="Search by employee ID"
+          className="form-field w-full"
+          placeholder="Search by ID"
           value={searchEmployeeId}
           onChange={(event) => setSearchEmployeeId(event.target.value)}
         />
-        <select className="form-field md:max-w-xs" value={filters.department} onChange={(event) => setFilter('department', event.target.value)}>
+        <select className="form-field w-full" value={filters.department} onChange={(event) => setFilter('department', event.target.value)}>
           <option value="">All departments</option>
           {departments.map((department) => (
             <option key={department} value={department}>{department}</option>
           ))}
         </select>
-        <select className="form-field md:max-w-xs" value={filters.designation} onChange={(event) => setFilter('designation', event.target.value)}>
+        <select className="form-field w-full" value={filters.designation} onChange={(event) => setFilter('designation', event.target.value)}>
           <option value="">All designations</option>
           {designations.map((designation) => (
             <option key={designation} value={designation}>{designation}</option>
           ))}
         </select>
-        <select className="form-field md:max-w-xs" value={filters.status} onChange={(event) => setFilter('status', event.target.value)}>
+        <select className="form-field w-full" value={filters.status} onChange={(event) => setFilter('status', event.target.value)}>
           <option value="">All statuses</option>
           <option value="active">Active</option>
           <option value="inactive">Inactive</option>
@@ -121,6 +122,8 @@ const EmployeeManagement = () => {
       {error && <p className="mb-4 rounded-md bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <DataTable
         empty={loading ? 'Loading employees...' : 'No employees found.'}
+        rowClassName={(_, index) => employeeRowTones[index % employeeRowTones.length]}
+        rowCellClassName={(_, index) => employeeRowTones[index % employeeRowTones.length]}
         columns={[
           { key: 'employeeCode', label: 'Employee ID' },
           { key: 'name', label: 'Employee name', render: (row) => row.userId?.name || '-' },

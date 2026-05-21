@@ -1,4 +1,4 @@
-const DataTable = ({ columns, rows, empty = 'No records found.' }) => (
+const DataTable = ({ columns, rows, empty = 'No records found.', rowClassName, rowCellClassName }) => (
   <div className="overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
     <div className="overflow-x-auto">
       <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -16,9 +16,9 @@ const DataTable = ({ columns, rows, empty = 'No records found.' }) => (
             </tr>
           )}
           {rows.map((row, index) => (
-            <tr className="hover:bg-slate-50" key={row._id || row.id || index}>
+            <tr className={`${rowClassName ? rowClassName(row, index) : ''} hover:bg-slate-50`} key={row._id || row.id || index}>
               {columns.map((column) => (
-                <td className="px-4 py-3 text-slate-700" key={column.key}>
+                <td className={`px-4 py-3 text-slate-700 ${rowCellClassName ? rowCellClassName(row, index, column) : ''}`} key={column.key}>
                   {column.render ? column.render(row) : row[column.key]}
                 </td>
               ))}
