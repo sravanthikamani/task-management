@@ -32,6 +32,12 @@ const Login = () => {
       setError('Email or employee ID and password are required');
       return;
     }
+
+    if (payload.password.length < 6) {
+      setError('Password must contain at least 6 characters');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const loggedInUser = await login(payload);
@@ -54,7 +60,19 @@ const Login = () => {
         <form className="mt-6 space-y-4" onSubmit={submit}>
           {error && <p className="rounded-xl border border-red-200 bg-red-50/85 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>}
           <FormInput label="Email or Employee ID" name="identifier" value={form.identifier} onChange={update} autoCapitalize="none" autoCorrect="off" />
-          <FormInput label="Password" name="password" type="password" value={form.password} onChange={update} autoCapitalize="none" autoCorrect="off" />
+          <div>
+            <FormInput
+              label="Password"
+              name="password"
+              type="password"
+              value={form.password}
+              onChange={update}
+              autoCapitalize="none"
+              autoCorrect="off"
+              minLength={6}
+            />
+            <p className="mt-1 text-xs font-medium text-slate-500">Minimum password length is 6 characters.</p>
+          </div>
           <FormInput
             as="select"
             label="Role"

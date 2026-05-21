@@ -38,11 +38,29 @@ export const register = asyncHandler(async (req, res) => {
 
 export const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
-  const user = await User.findOne({ email }).select('+password');
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const normalizedPassword = String(password || '').trim();
 
-  if (!user || !(await user.matchPassword(password))) {
+  if (!normalizedEmail || !normalizedPassword) {
+    res.status(400);
+    throw new Error('Email and password are required');
+  }
+
+  if (normalizedPassword.length < 6) {
+    res.status(400);
+    throw new Error('Password must be at least 6 characters long');
+  }
+
+  const user = await User.findOne({ email: normalizedEmail }).select('+password');
+
+  if (!user) {
     res.status(401);
-    throw new Error('Invalid email or password');
+    throw new Error('Invalid email');
+  }
+
+  if (!(await user.matchPassword(normalizedPassword))) {
+    res.status(401);
+    throw new Error('Invalid password');
   }
 
   if (user.status !== 'active') {

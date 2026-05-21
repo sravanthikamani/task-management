@@ -26,6 +26,11 @@ export const login = asyncHandler(async (req, res) => {
     throw new Error('Email or employee ID and password are required');
   }
 
+  if (normalizedPassword.length < 6) {
+    res.status(400);
+    throw new Error('Password must be at least 6 characters long');
+  }
+
   let user = await User.findOne({ email: lookup.toLowerCase() }).select('+passwordHash');
 
   if (!user) {
@@ -35,9 +40,14 @@ export const login = asyncHandler(async (req, res) => {
     user = employee?.userId;
   }
 
-  if (!user || !(await user.matchPassword(normalizedPassword))) {
+  if (!user) {
     res.status(401);
-    throw new Error('Invalid credentials');
+    throw new Error(lookup.includes('@') ? 'Invalid email' : 'Invalid employee ID');
+  }
+
+  if (!(await user.matchPassword(normalizedPassword))) {
+    res.status(401);
+    throw new Error('Invalid password');
   }
 
   if (selectedRole && user.role !== selectedRole) {
