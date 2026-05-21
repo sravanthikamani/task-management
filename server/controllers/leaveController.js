@@ -212,7 +212,8 @@ export const getLeaveById = asyncHandler(async (req, res) => {
 
   const previousLeaves = await LeaveRequest.find({
     employeeId,
-    _id: { $ne: leave._id }
+    _id: { $ne: leave._id },
+    fromDate: { $lt: leave.fromDate }
   })
     .sort({ fromDate: -1 })
     .limit(10)

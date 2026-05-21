@@ -82,6 +82,12 @@ const LeaveManagement = () => {
 		return types.sort((a, b) => a.localeCompare(b));
 	}, [leaves]);
 
+	const visiblePreviousLeaves = useMemo(() => {
+		if (!selectedLeave?.fromDate) return previousLeaves;
+		const selectedFromDate = new Date(selectedLeave.fromDate);
+		return previousLeaves.filter((leave) => new Date(leave.fromDate) < selectedFromDate);
+	}, [previousLeaves, selectedLeave]);
+
 	const setFilter = (key, value) => {
 		setFilters((current) => ({ ...current, [key]: value }));
 	};
@@ -132,16 +138,32 @@ const LeaveManagement = () => {
 		setSelectedLeaveId(leaveId);
 		setDetailError('');
 		setRemarks('');
+		setDetailLoading(true);
 
-		// Use list data only to avoid unnecessary failing detail requests.
-		setSelectedLeave(leaveRow);
-		setPreviousLeaves(
-			allLeaves
-				.filter((leave) => leave._id !== leaveId && String(leave.employeeId?._id || leave.employeeId) === String(leaveRow.employeeId?._id || leaveRow.employeeId))
-				.slice(0, 10)
-		);
-		setRemarks(leaveRow.adminRemarks || '');
-		setDetailLoading(false);
+		try {
+			const { data } = await leaveService.detail(leaveId);
+			const detailLeave = data.leave || leaveRow;
+			setSelectedLeave(detailLeave);
+			setPreviousLeaves(data.previousLeaves || []);
+			setRemarks(detailLeave.adminRemarks || '');
+		} catch {
+			setSelectedLeave(leaveRow);
+			setPreviousLeaves(
+				allLeaves
+					.filter(
+						(leave) =>
+							leave._id !== leaveId &&
+							String(leave.employeeId?._id || leave.employeeId) === String(leaveRow.employeeId?._id || leaveRow.employeeId) &&
+							new Date(leave.fromDate) < new Date(leaveRow.fromDate)
+					)
+					.sort((a, b) => new Date(b.fromDate) - new Date(a.fromDate))
+					.slice(0, 10)
+			);
+			setRemarks(leaveRow.adminRemarks || '');
+			setDetailError('Unable to refresh full leave detail. Showing available data.');
+		} finally {
+			setDetailLoading(false);
+		}
 	};
 
 	useEffect(() => {
@@ -302,8 +324,8 @@ const LeaveManagement = () => {
 
 							<section className="rounded-md border border-slate-200 p-3 text-sm">
 								<h3 className="mb-2 text-xs font-black uppercase tracking-wide text-slate-500">Previous leave history</h3>
-								{!previousLeaves.length && <p>No previous leave history available.</p>}
-								{!!previousLeaves.length && (
+								{!visiblePreviousLeaves.length && <p>No previous leave history available.</p>}
+								{!!visiblePreviousLeaves.length && (
 									<div className="overflow-x-auto">
 										<table className="min-w-full divide-y divide-slate-200 text-sm">
 											<thead className="bg-slate-50">
@@ -316,7 +338,7 @@ const LeaveManagement = () => {
 												</tr>
 											</thead>
 											<tbody className="divide-y divide-slate-100">
-												{previousLeaves.map((history) => (
+												{visiblePreviousLeaves.map((history) => (
 													<tr key={history._id}>
 														<td className="px-2 py-2 text-slate-700">{history.leaveType || '-'}</td>
 														<td className="px-2 py-2 text-slate-700">{formatDate(history.fromDate)}</td>
