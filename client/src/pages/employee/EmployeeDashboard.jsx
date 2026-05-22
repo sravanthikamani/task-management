@@ -458,7 +458,15 @@ const EmployeeDashboard = () => {
     return {
       total: list.length,
       inProgress: list.filter((task) => task.status === 'in_progress').length,
-      completed: list.filter((task) => task.status === 'completed').length
+      completed: list.filter((task) => task.status === 'completed').length,
+      inReview: list.filter((task) => task.status === 'in_review' || task.status === 'under_review').length,
+      overdue: list.filter((task) => {
+        if (task.status === 'completed') return false;
+        if (task.status === 'overdue') return true;
+        if (!task.deadline) return false;
+        const due = new Date(task.deadline);
+        return !Number.isNaN(due.getTime()) && due.getTime() < Date.now();
+      }).length
     };
   }, [data?.todayTasks]);
 
@@ -737,9 +745,9 @@ const EmployeeDashboard = () => {
               <path d="M19 15.5v4l2.2 1.5" stroke="#2563eb" strokeWidth="2" strokeLinecap="round"/>
             </svg>
           </span>
-          <div className="employee-kpi-main">5</div>
+          <div className="employee-kpi-main">{taskStats.inReview}</div>
           <div className="employee-kpi-label">In Review</div>
-          <span className="employee-kpi-trend" style={{ color: '#2563eb' }}>↗ +5</span>
+          <span className="employee-kpi-trend" style={{ color: '#2563eb' }}>{taskStats.inReview > 0 ? `↗ +${taskStats.inReview}` : '↗ 0'}</span>
         </div>
         {/* Overdue */}
         <div className="employee-kpi-card employee-kpi-overdue">
@@ -752,9 +760,9 @@ const EmployeeDashboard = () => {
               <path d="M19 16v3" stroke="#e11d48" strokeWidth="2" strokeLinecap="round"/>
             </svg>
           </span>
-          <div className="employee-kpi-main">2</div>
+          <div className="employee-kpi-main">{taskStats.overdue}</div>
           <div className="employee-kpi-label">Overdue</div>
-          <span className="employee-kpi-trend" style={{ color: '#e11d48' }}>↗ +2</span>
+          <span className="employee-kpi-trend" style={{ color: '#e11d48' }}>{taskStats.overdue > 0 ? `↗ +${taskStats.overdue}` : '↗ 0'}</span>
         </div>
       </div>
 

@@ -39,3 +39,19 @@ export const getAppDayRange = (value = new Date()) => {
 
   return { start, end, dateKey };
 };
+
+export const getAppDateAtHourMinute = (baseDate = new Date(), hour = 0, minute = 0) => {
+  const dateKey = getAppDateKey(baseDate);
+  const [year, month, day] = dateKey.split('-').map((part) => Number(part));
+
+  if (!dateKey || !Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    const fallback = new Date(baseDate);
+    fallback.setHours(hour, minute, 0, 0);
+    return fallback;
+  }
+
+  const safeHour = Math.min(23, Math.max(0, Number(hour) || 0));
+  const safeMinute = Math.min(59, Math.max(0, Number(minute) || 0));
+  const utcMs = Date.UTC(year, month - 1, day, safeHour, safeMinute, 0, 0) - (APP_UTC_OFFSET_MINUTES * 60 * 1000);
+  return new Date(utcMs);
+};

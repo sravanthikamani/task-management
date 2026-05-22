@@ -5,7 +5,7 @@ import Attendance from '../models/Attendance.js';
 import ProjectMember from '../models/ProjectMember.js';
 import Task from '../models/Task.js';
 import DailyWorkUpdate from '../models/DailyWorkUpdate.js';
-import { getAppDateKey, getAppDayRange } from '../utils/attendanceDate.js';
+import { getAppDateAtHourMinute, getAppDateKey, getAppDayRange } from '../utils/attendanceDate.js';
 
 const minutesBetween = (start, end) => {
   if (!start || !end) return 0;
@@ -24,9 +24,7 @@ const parseHourMinute = (value, fallback = '09:30') => {
 
 const dateAtTime = (baseDate, timeValue, fallback = '09:30') => {
   const [hour, minute] = parseHourMinute(timeValue, fallback);
-  const value = new Date(baseDate);
-  value.setHours(hour, minute, 0, 0);
-  return value;
+  return getAppDateAtHourMinute(baseDate, hour, minute);
 };
 
 const resolveLateThreshold = (employee) => employee?.shiftStartTime || employee?.lateLoginRule || '09:30';

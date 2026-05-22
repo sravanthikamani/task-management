@@ -3,7 +3,7 @@ import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
 import Settings from '../models/Settings.js';
 import { calculateWorkingHours, dateOnly, minutesBetween } from '../utils/calculateHours.js';
-import { getAppDateKey, getAppDayRange } from '../utils/attendanceDate.js';
+import { getAppDateAtHourMinute, getAppDateKey, getAppDayRange } from '../utils/attendanceDate.js';
 
 const parseHourMinute = (value, fallback = '09:30') => {
   const source = typeof value === 'string' && value.includes(':') ? value : fallback;
@@ -17,9 +17,7 @@ const parseHourMinute = (value, fallback = '09:30') => {
 
 const dateAtTime = (baseDate, timeValue, fallback = '09:30') => {
   const [hour, minute] = parseHourMinute(timeValue, fallback);
-  const value = new Date(baseDate);
-  value.setHours(hour, minute, 0, 0);
-  return value;
+  return getAppDateAtHourMinute(baseDate, hour, minute);
 };
 
 const resolveLateThreshold = (employee, settings) => (
