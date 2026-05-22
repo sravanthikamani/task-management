@@ -4,6 +4,122 @@ import Employee from '../models/Employee.js';
 import Settings from '../models/Settings.js';
 import { calculateWorkingHours, dateOnly, minutesBetween } from '../utils/calculateHours.js';
 
+const parseHourMinute = (value, fallback = '09:30') => {
+  const source = typeof value === 'string' && value.includes(':') ? value : fallback;
+  const [rawHour, rawMinute] = source.split(':').map((token) => Number(token));
+
+  const hour = Number.isFinite(rawHour) ? rawHour : Number(fallback.split(':')[0]);
+  const minute = Number.isFinite(rawMinute) ? rawMinute : Number(fallback.split(':')[1]);
+
+  return [Math.min(23, Math.max(0, hour)), Math.min(59, Math.max(0, minute))];
+};
+
+const dateAtTime = (baseDate, timeValue, fallback = '09:30') => {
+  const [hour, minute] = parseHourMinute(timeValue, fallback);
+  const value = new Date(baseDate);
+  value.setHours(hour, minute, 0, 0);
+  return value;
+};
+
+const resolveLateThreshold = (employee, settings) => (
+  employee?.shiftStartTime
+  || employee?.lateLoginRule
+  || settings?.attendanceSettings?.lateLoginLimit
+  || settings?.lateLoginLimit
+  || '09:30'
+);
+
+const isLateByShift = (loginTime, attendanceDate, threshold) => {
+  if (!loginTime) return false;
+
+  const login = new Date(loginTime);
+  if (Number.isNaN(login.getTime())) return false;
+
+  const thresholdDate = dateAtTime(attendanceDate || login, threshold, '09:30');
+  return login > thresholdDate;
+};
+
+const getEffectiveNowForRecord = (attendance, now = new Date()) => {
+  const recordDate = attendance?.date ? new Date(attendance.date) : null;
+  if (!recordDate || Number.isNaN(recordDate.getTime())) {
+    return now;
+  }
+
+  const dayEnd = new Date(recordDate);
+  dayEnd.setHours(23, 59, 59, 999);
+  return now > dayEnd ? dayEnd : now;
+};
+
+const getAttendanceSessions = (attendance) => {
+  if (Array.isArray(attendance?.sessions) && attendance.sessions.length > 0) {
+    return attendance.sessions;
+  }
+
+  if (attendance?.loginTime) {
+    return [{
+      loginTime: attendance.loginTime,
+      logoutTime: attendance.logoutTime || undefined,
+      durationMinutes: attendance.logoutTime ? minutesBetween(attendance.loginTime, attendance.logoutTime) : 0
+    }];
+  }
+
+  return [];
+};
+
+const calculateSessionMinutes = (sessions, referenceNow = new Date()) => sessions.reduce((sum, session) => {
+  if (!session?.loginTime) {
+    return sum;
+  }
+
+  if (typeof session.durationMinutes === 'number' && session.durationMinutes > 0) {
+    return sum + session.durationMinutes;
+  }
+
+  const sessionEnd = session.logoutTime || referenceNow;
+  return sum + minutesBetween(session.loginTime, sessionEnd);
+}, 0);
+
+const deriveAttendanceTimes = (attendance, now = new Date()) => {
+  const sessions = getAttendanceSessions(attendance);
+  const firstSession = sessions.length > 0 ? sessions[0] : null;
+  const lastSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
+  const referenceNow = getEffectiveNowForRecord(attendance, now);
+  const totalMinutes = Math.max(0, calculateSessionMinutes(sessions, referenceNow) - Number(attendance?.totalBreakMinutes || 0));
+  const derivedHours = Number((totalMinutes / 60).toFixed(2));
+
+  return {
+    sessions,
+    loginTime: attendance?.loginTime || firstSession?.loginTime || null,
+    logoutTime: attendance?.logoutTime || lastSession?.logoutTime || null,
+    totalWorkingHours: attendance?.totalWorkingHours > 0 ? attendance.totalWorkingHours : derivedHours
+  };
+};
+
+const normalizeAttendanceRecord = (record, options = {}) => {
+  const source = typeof record.toObject === 'function' ? record.toObject() : record;
+  const derived = deriveAttendanceTimes(source, options.now || new Date());
+  const currentStatus = source?.status || 'not_logged_in';
+  const lateThreshold = resolveLateThreshold(options.employee, options.settings);
+  const lateByShift = ['logged_in', 'logged_out', 'late'].includes(currentStatus)
+    && isLateByShift(derived.loginTime, source?.date || derived.loginTime, lateThreshold);
+
+  let normalizedStatus = currentStatus;
+  if (lateByShift) {
+    normalizedStatus = 'late';
+  } else if (currentStatus === 'late') {
+    normalizedStatus = derived.logoutTime ? 'logged_out' : 'logged_in';
+  }
+
+  return {
+    ...source,
+    sessions: derived.sessions,
+    loginTime: derived.loginTime,
+    logoutTime: derived.logoutTime,
+    totalWorkingHours: derived.totalWorkingHours,
+    status: normalizedStatus
+  };
+};
+
 const requireEmployee = (req) => {
   if (!req.employee) {
     throw new Error('Employee profile required for attendance');
@@ -25,10 +141,8 @@ export const attendanceLogin = asyncHandler(async (req, res) => {
 
   const settings = await Settings.findOne();
   const now = new Date();
-  const lateLimit = settings?.attendanceSettings?.lateLoginLimit || settings?.lateLoginLimit || employee.lateLoginRule || '09:45';
-  const [hour, minute] = lateLimit.split(':').map(Number);
-  const lateDate = new Date(today);
-  lateDate.setHours(hour, minute, 0, 0);
+  const lateThreshold = resolveLateThreshold(employee, settings);
+  const lateDate = dateAtTime(today, lateThreshold, '09:30');
 
   attendance.sessions.push({ loginTime: now });
   attendance.status = now > lateDate ? 'late' : 'logged_in';
@@ -55,10 +169,8 @@ export const attendanceLogout = asyncHandler(async (req, res) => {
 
   const now = new Date();
   const settings = await Settings.findOne();
-  const earlyEndTime = settings?.attendanceSettings?.workEndTime || settings?.workEndTime || employee.shiftEndTime || '18:30';
-  const [eh, em] = earlyEndTime.split(':').map(Number);
-  const shiftEnd = new Date(dateOnly());
-  shiftEnd.setHours(eh, em, 0, 0);
+  const earlyEndTime = employee.shiftEndTime || settings?.attendanceSettings?.workEndTime || settings?.workEndTime || '18:30';
+  const shiftEnd = dateAtTime(dateOnly(), earlyEndTime, '18:30');
 
   lastSession.logoutTime = now;
   lastSession.durationMinutes = Math.max(0, Math.round((now - new Date(lastSession.loginTime)) / 60000));
@@ -110,13 +222,18 @@ export const breakEnd = asyncHandler(async (req, res) => {
 export const getTodayAttendance = asyncHandler(async (req, res) => {
   const employee = requireEmployee(req);
   const attendance = await Attendance.findOne({ employeeId: employee._id, date: dateOnly() });
-  res.json({ attendance, status: attendance?.status || 'not_logged_in' });
+  const settings = await Settings.findOne();
+  const normalized = attendance ? normalizeAttendanceRecord(attendance, { employee, settings }) : null;
+
+  res.json({ attendance: normalized, status: normalized?.status || 'not_logged_in' });
 });
 
 export const getAttendanceHistory = asyncHandler(async (req, res) => {
   const employee = requireEmployee(req);
   const records = await Attendance.find({ employeeId: employee._id }).sort({ date: -1 });
-  res.json({ records });
+  const settings = await Settings.findOne();
+
+  res.json({ records: records.map((record) => normalizeAttendanceRecord(record, { employee, settings })) });
 });
 
 export const getAdminAttendance = asyncHandler(async (req, res) => {
@@ -162,7 +279,7 @@ export const getAdminAttendance = asyncHandler(async (req, res) => {
     records = records.filter((record) => record.employeeId?.department?.toLowerCase() === normalized);
   }
 
-  res.json({ records });
+  res.json({ records: records.map(normalizeAttendanceRecord) });
 });
 
 export const getAttendanceSummary = asyncHandler(async (req, res) => {
@@ -288,20 +405,23 @@ export const exportAttendance = asyncHandler(async (req, res) => {
   const formatDate = (val) => (val ? new Date(val).toLocaleDateString('en-IN') : '');
 
   const headers = ['Date', 'Employee ID', 'Employee Name', 'Department', 'Designation', 'Login Time', 'Logout Time', 'Total Working Hours', 'Break Minutes', 'Status', 'Early Logout', 'Remarks'];
-  const rows = records.map((r) => [
-    formatDate(r.date),
-    r.employeeId?.employeeCode || '',
-    r.employeeId?.userId?.name || '',
-    r.employeeId?.department || '',
-    r.employeeId?.designation || '',
-    formatTime(r.loginTime),
-    formatTime(r.logoutTime),
-    r.totalWorkingHours ?? '',
-    r.totalBreakMinutes ?? '',
-    r.status || '',
-    r.earlyLogout ? 'Yes' : 'No',
-    r.remarks || ''
-  ]);
+  const rows = records.map((record) => {
+    const r = normalizeAttendanceRecord(record);
+    return [
+      formatDate(r.date),
+      r.employeeId?.employeeCode || '',
+      r.employeeId?.userId?.name || '',
+      r.employeeId?.department || '',
+      r.employeeId?.designation || '',
+      formatTime(r.loginTime),
+      formatTime(r.logoutTime),
+      r.totalWorkingHours ?? '',
+      r.totalBreakMinutes ?? '',
+      r.status || '',
+      r.earlyLogout ? 'Yes' : 'No',
+      r.remarks || ''
+    ];
+  });
 
   const escape = (v) => `"${String(v).replace(/"/g, '""')}"`;
   const csv = [headers.map(escape).join(','), ...rows.map((row) => row.map(escape).join(','))].join('\n');
@@ -312,10 +432,81 @@ export const exportAttendance = asyncHandler(async (req, res) => {
 });
 
 export const updateAttendance = asyncHandler(async (req, res) => {
-  const attendance = await Attendance.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+  const attendance = await Attendance.findById(req.params.id);
   if (!attendance) {
     res.status(404);
     throw new Error('Attendance not found');
   }
-  res.json({ attendance });
+
+  const { loginTime, logoutTime, status, remarks, location } = req.body;
+  const hasLoginTime = Object.prototype.hasOwnProperty.call(req.body, 'loginTime');
+  const hasLogoutTime = Object.prototype.hasOwnProperty.call(req.body, 'logoutTime');
+
+  if (status !== undefined) attendance.status = status;
+  if (remarks !== undefined) attendance.remarks = remarks;
+  if (location !== undefined) attendance.location = location;
+
+  if (hasLoginTime || hasLogoutTime) {
+    const sessions = getAttendanceSessions(attendance).map((session) => ({
+      loginTime: session.loginTime,
+      logoutTime: session.logoutTime,
+      durationMinutes: session.durationMinutes || 0
+    }));
+
+    if (hasLoginTime && loginTime) {
+      const parsedLogin = new Date(loginTime);
+      if (Number.isNaN(parsedLogin.getTime())) {
+        res.status(400);
+        throw new Error('Invalid login time');
+      }
+
+      if (sessions.length === 0) {
+        sessions.push({ loginTime: parsedLogin, logoutTime: undefined, durationMinutes: 0 });
+      } else {
+        sessions[0].loginTime = parsedLogin;
+      }
+    }
+
+    if (hasLogoutTime) {
+      if (!logoutTime) {
+        if (sessions.length > 0) {
+          sessions[sessions.length - 1].logoutTime = undefined;
+          sessions[sessions.length - 1].durationMinutes = 0;
+        }
+      } else {
+        const parsedLogout = new Date(logoutTime);
+        if (Number.isNaN(parsedLogout.getTime())) {
+          res.status(400);
+          throw new Error('Invalid logout time');
+        }
+        if (sessions.length === 0) {
+          res.status(400);
+          throw new Error('Login time is required before logout time');
+        }
+        sessions[sessions.length - 1].logoutTime = parsedLogout;
+      }
+    }
+
+    sessions.forEach((session) => {
+      session.durationMinutes = session.logoutTime
+        ? minutesBetween(session.loginTime, session.logoutTime)
+        : 0;
+    });
+
+    if (sessions.some((session) => session.logoutTime && new Date(session.logoutTime) < new Date(session.loginTime))) {
+      res.status(400);
+      throw new Error('Logout time must be after login time');
+    }
+
+    attendance.sessions = sessions;
+  }
+
+  const derived = deriveAttendanceTimes(attendance);
+  attendance.totalWorkingHours = attendance.status === 'logged_out'
+    ? derived.totalWorkingHours
+    : Number(attendance.totalWorkingHours || 0);
+
+  await attendance.save();
+
+  res.json({ attendance: normalizeAttendanceRecord(attendance) });
 });

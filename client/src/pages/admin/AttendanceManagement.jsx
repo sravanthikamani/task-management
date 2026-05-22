@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import Modal from '../../components/common/Modal.jsx';
 import StatusBadge from '../../components/common/StatusBadge.jsx';
 import { attendanceService } from '../../services/attendanceService.js';
@@ -11,6 +10,43 @@ const fmt = (val) => (val ? new Date(val).toLocaleDateString('en-IN') : '–');
 const fmtTime = (val) => (val ? new Date(val).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '–');
 const fmtHours = (h) => (h != null ? `${Number(h).toFixed(2)} hr` : '–');
 
+const minutesBetween = (start, end) => {
+  if (!start || !end) return 0;
+  return Math.max(0, Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60000));
+};
+
+const normalizeAttendanceRecord = (record) => {
+  const now = new Date();
+  const recordDate = record?.date ? new Date(record.date) : null;
+  const effectiveNow = recordDate && !Number.isNaN(recordDate.getTime())
+    ? (now > new Date(recordDate.setHours(23, 59, 59, 999)) ? new Date(recordDate) : now)
+    : now;
+
+  const sessions = Array.isArray(record?.sessions) ? record.sessions : [];
+  const firstSession = sessions.length > 0 ? sessions[0] : null;
+  const lastSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
+
+  const totalSessionMinutes = sessions.reduce((sum, session) => {
+    if (!session?.loginTime) return sum;
+    if (typeof session.durationMinutes === 'number' && session.durationMinutes > 0) {
+      return sum + session.durationMinutes;
+    }
+
+    const endTime = session.logoutTime || effectiveNow;
+    return sum + minutesBetween(session.loginTime, endTime);
+  }, 0);
+
+  const derivedWorkingHours = Number((Math.max(0, totalSessionMinutes - Number(record?.totalBreakMinutes || 0)) / 60).toFixed(2));
+
+  return {
+    ...record,
+    sessions,
+    loginTime: record?.loginTime || firstSession?.loginTime || null,
+    logoutTime: record?.logoutTime || lastSession?.logoutTime || null,
+    totalWorkingHours: record?.totalWorkingHours > 0 ? record.totalWorkingHours : derivedWorkingHours
+  };
+};
+
 const STATUS_OPTIONS = [
   { value: '', label: 'All statuses' },
   { value: 'logged_in', label: 'Logged in' },
@@ -20,6 +56,12 @@ const STATUS_OPTIONS = [
   { value: 'absent', label: 'Absent' },
   { value: 'on_leave', label: 'On leave' },
   { value: 'missing_logout', label: 'Missing logout' }
+];
+
+const TIMING_FILTER_OPTIONS = [
+  { value: '', label: 'All login / logout' },
+  { value: 'late_login', label: 'Late logins only' },
+  { value: 'early_logout', label: 'Early logouts only' }
 ];
 
 /* ── Summary stat card ────────────────────────────────────────────────────── */
@@ -279,20 +321,16 @@ const MarkAbsentModal = ({ record, onClose, onConfirm }) => {
 
 /* ── Main page ────────────────────────────────────────────────────────────── */
 const AttendanceManagement = () => {
-  const [searchParams] = useSearchParams();
   const [records, setRecords] = useState([]);
-  const [employees, setEmployees] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [summary, setSummary] = useState(null);
   const [search, setSearch] = useState('');
   const [filters, setFilters] = useState({
-    employeeId: searchParams.get('employeeId') || '',
     status: '',
     fromDate: new Date().toISOString().slice(0, 10),
     toDate: new Date().toISOString().slice(0, 10),
     department: '',
-    lateLogin: '',
-    earlyLogout: ''
+    timing: ''
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -305,13 +343,12 @@ const AttendanceManagement = () => {
 
   const buildParams = useCallback(() => ({
     search: search || undefined,
-    employeeId: filters.employeeId || undefined,
     status: filters.status || undefined,
     fromDate: filters.fromDate || undefined,
     toDate: filters.toDate || undefined,
     department: filters.department || undefined,
-    lateLogin: filters.lateLogin || undefined,
-    earlyLogout: filters.earlyLogout || undefined
+    lateLogin: filters.timing === 'late_login' ? 'true' : undefined,
+    earlyLogout: filters.timing === 'early_logout' ? 'true' : undefined
   }), [search, filters]);
 
   const loadRecords = useCallback(async () => {
@@ -319,7 +356,7 @@ const AttendanceManagement = () => {
     setError('');
     try {
       const { data } = await attendanceService.admin(buildParams());
-      setRecords(data.records || []);
+      setRecords((data.records || []).map(normalizeAttendanceRecord));
     } catch {
       setRecords([]);
       setError('Unable to load attendance records.');
@@ -344,7 +381,6 @@ const AttendanceManagement = () => {
   useEffect(() => {
     employeeService.list().then(({ data }) => {
       const emps = data.employees || [];
-      setEmployees(emps);
       const depts = [...new Set(emps.map((e) => e.department).filter(Boolean))].sort();
       setDepartments(depts);
     }).catch(() => {});
@@ -413,41 +449,32 @@ const AttendanceManagement = () => {
 
       {/* ── Filters ── */}
       <div className="mb-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-wrap items-center gap-3">
-          <input
-            className="form-field md:max-w-xs"
-            placeholder="Search by name or ID…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <select className="form-field md:max-w-xs" value={filters.employeeId} onChange={(e) => setFilter('employeeId', e.target.value)}>
-            <option value="">All employees</option>
-            {employees.map((emp) => (
-              <option key={emp._id} value={emp._id}>{emp.userId?.name || emp.employeeCode}</option>
-            ))}
-          </select>
-          <select className="form-field md:max-w-xs" value={filters.department} onChange={(e) => setFilter('department', e.target.value)}>
+        <div className="overflow-x-auto">
+          <div className="grid min-w-[980px] grid-cols-[minmax(220px,1.4fr)_minmax(150px,0.9fr)_minmax(150px,0.9fr)_minmax(170px,0.95fr)_minmax(140px,0.8fr)_minmax(140px,0.8fr)] gap-2.5 items-center">
+            <input
+              className="form-field w-full"
+              placeholder="Search by name or ID…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <select className="form-field w-full" value={filters.department} onChange={(e) => setFilter('department', e.target.value)}>
             <option value="">All departments</option>
             {departments.map((d) => <option key={d} value={d}>{d}</option>)}
-          </select>
-          <select className="form-field md:max-w-xs" value={filters.status} onChange={(e) => setFilter('status', e.target.value)}>
+            </select>
+            <select className="form-field w-full" value={filters.status} onChange={(e) => setFilter('status', e.target.value)}>
             {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-          <select className="form-field md:max-w-xs" value={filters.lateLogin} onChange={(e) => setFilter('lateLogin', e.target.value)}>
-            <option value="">All logins</option>
-            <option value="true">Late logins only</option>
-          </select>
-          <select className="form-field md:max-w-xs" value={filters.earlyLogout} onChange={(e) => setFilter('earlyLogout', e.target.value)}>
-            <option value="">All logouts</option>
-            <option value="true">Early logouts only</option>
-          </select>
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold text-slate-500">From</label>
-            <input className="form-field" type="date" value={filters.fromDate} onChange={(e) => setFilter('fromDate', e.target.value)} />
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold text-slate-500">To</label>
-            <input className="form-field" type="date" value={filters.toDate} onChange={(e) => setFilter('toDate', e.target.value)} />
+            </select>
+            <select className="form-field w-full" value={filters.timing} onChange={(e) => setFilter('timing', e.target.value)}>
+              {TIMING_FILTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+            <div className="flex items-center gap-2 whitespace-nowrap">
+              <label className="text-xs font-semibold text-slate-500">From</label>
+              <input className="form-field w-full min-w-0" type="date" value={filters.fromDate} onChange={(e) => setFilter('fromDate', e.target.value)} />
+            </div>
+            <div className="flex items-center gap-2 whitespace-nowrap">
+              <label className="text-xs font-semibold text-slate-500">To</label>
+              <input className="form-field w-full min-w-0" type="date" value={filters.toDate} onChange={(e) => setFilter('toDate', e.target.value)} />
+            </div>
           </div>
         </div>
       </div>

@@ -7,6 +7,92 @@ import Task from '../models/Task.js';
 import DailyWorkUpdate from '../models/DailyWorkUpdate.js';
 import { dateOnly } from '../utils/calculateHours.js';
 
+const minutesBetween = (start, end) => {
+  if (!start || !end) return 0;
+  return Math.max(0, Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60000));
+};
+
+const parseHourMinute = (value, fallback = '09:30') => {
+  const source = typeof value === 'string' && value.includes(':') ? value : fallback;
+  const [rawHour, rawMinute] = source.split(':').map((token) => Number(token));
+
+  const hour = Number.isFinite(rawHour) ? rawHour : Number(fallback.split(':')[0]);
+  const minute = Number.isFinite(rawMinute) ? rawMinute : Number(fallback.split(':')[1]);
+
+  return [Math.min(23, Math.max(0, hour)), Math.min(59, Math.max(0, minute))];
+};
+
+const dateAtTime = (baseDate, timeValue, fallback = '09:30') => {
+  const [hour, minute] = parseHourMinute(timeValue, fallback);
+  const value = new Date(baseDate);
+  value.setHours(hour, minute, 0, 0);
+  return value;
+};
+
+const resolveLateThreshold = (employee) => employee?.shiftStartTime || employee?.lateLoginRule || '09:30';
+
+const isLateByShift = (loginTime, attendanceDate, threshold) => {
+  if (!loginTime) return false;
+
+  const login = new Date(loginTime);
+  if (Number.isNaN(login.getTime())) return false;
+
+  const thresholdDate = dateAtTime(attendanceDate || login, threshold, '09:30');
+  return login > thresholdDate;
+};
+
+const getEffectiveNowForRecord = (record, now = new Date()) => {
+  const recordDate = record?.date ? new Date(record.date) : null;
+  if (!recordDate || Number.isNaN(recordDate.getTime())) {
+    return now;
+  }
+
+  const dayEnd = new Date(recordDate);
+  dayEnd.setHours(23, 59, 59, 999);
+  return now > dayEnd ? dayEnd : now;
+};
+
+const normalizeAttendanceRecord = (record, employee = null) => {
+  if (!record) return null;
+
+  const source = typeof record.toObject === 'function' ? record.toObject() : record;
+  const effectiveNow = getEffectiveNowForRecord(source, new Date());
+  const sessions = Array.isArray(source.sessions) ? source.sessions : [];
+  const firstSession = sessions.length > 0 ? sessions[0] : null;
+  const lastSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
+
+  const totalSessionMinutes = sessions.reduce((sum, session) => {
+    if (!session?.loginTime) return sum;
+    if (typeof session.durationMinutes === 'number' && session.durationMinutes > 0) {
+      return sum + session.durationMinutes;
+    }
+    const endTime = session.logoutTime || effectiveNow;
+    return sum + minutesBetween(session.loginTime, endTime);
+  }, 0);
+
+  const fallbackHours = Number((Math.max(0, totalSessionMinutes - Number(source.totalBreakMinutes || 0)) / 60).toFixed(2));
+  const derivedLoginTime = source.loginTime || firstSession?.loginTime || null;
+  const derivedLogoutTime = source.logoutTime || lastSession?.logoutTime || null;
+  const currentStatus = source.status || 'not_logged_in';
+  const lateByShift = ['logged_in', 'logged_out', 'late'].includes(currentStatus)
+    && isLateByShift(derivedLoginTime, source?.date || derivedLoginTime, resolveLateThreshold(employee));
+
+  let normalizedStatus = currentStatus;
+  if (lateByShift) {
+    normalizedStatus = 'late';
+  } else if (currentStatus === 'late') {
+    normalizedStatus = derivedLogoutTime ? 'logged_out' : 'logged_in';
+  }
+
+  return {
+    ...source,
+    loginTime: derivedLoginTime,
+    logoutTime: derivedLogoutTime,
+    totalWorkingHours: source.totalWorkingHours > 0 ? source.totalWorkingHours : fallbackHours,
+    status: normalizedStatus
+  };
+};
+
 const selfProfilePayload = (employee, user) => ({
   _id: employee._id,
   employeeCode: employee.employeeCode,
@@ -193,10 +279,12 @@ export const getEmployeeProfile = asyncHandler(async (req, res) => {
   }
 
   const employeeId = employee._id;
-  const today = dateOnly();
+  const todayStart = dateOnly();
+  const todayEnd = new Date(todayStart);
+  todayEnd.setDate(todayEnd.getDate() + 1);
 
   const [todayAttendance, attendanceHistory, projectMembers, tasks, dailyUpdates] = await Promise.all([
-    Attendance.findOne({ employeeId, date: today }),
+    Attendance.findOne({ employeeId, date: { $gte: todayStart, $lt: todayEnd } }).sort({ date: -1 }),
     Attendance.find({ employeeId }).sort({ date: -1 }).limit(60),
     ProjectMember.find({ employeeId })
       .populate({ path: 'projectId', select: 'name projectCode deadline status department startDate' })
@@ -213,8 +301,8 @@ export const getEmployeeProfile = asyncHandler(async (req, res) => {
 
   res.json({
     employee,
-    todayAttendance,
-    attendanceHistory,
+    todayAttendance: normalizeAttendanceRecord(todayAttendance, employee),
+    attendanceHistory: attendanceHistory.map((record) => normalizeAttendanceRecord(record, employee)),
     projects: projectMembers
       .filter((pm) => pm.projectId)
       .map((pm) => ({

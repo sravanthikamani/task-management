@@ -20,6 +20,11 @@ const formatTime = (value) => {
 };
 
 const minutesFromSessions = (row) => {
+  const now = Date.now();
+  const rowDate = row?.date ? new Date(row.date) : null;
+  const cappedNow = rowDate && !Number.isNaN(rowDate.getTime())
+    ? Math.min(now, new Date(rowDate.setHours(23, 59, 59, 999)).getTime())
+    : now;
   const sessions = Array.isArray(row.sessions) ? row.sessions : [];
   const sessionMinutes = sessions.reduce((sum, session) => {
     if (typeof session?.durationMinutes === 'number' && session.durationMinutes > 0) {
@@ -31,8 +36,20 @@ const minutesFromSessions = (row) => {
       const diff = Math.max(0, Math.round((end - start) / 60000));
       return sum + diff;
     }
+    if (session?.loginTime) {
+      const start = new Date(session.loginTime);
+      const diff = Math.max(0, Math.round((cappedNow - start.getTime()) / 60000));
+      return sum + diff;
+    }
     return sum;
   }, 0);
+
+  if (sessions.length === 0 && row.loginTime) {
+    const start = new Date(row.loginTime);
+    const end = row.logoutTime ? new Date(row.logoutTime) : new Date(cappedNow);
+    const diff = Math.max(0, Math.round((end - start) / 60000));
+    return Math.max(0, diff - Number(row.totalBreakMinutes || 0));
+  }
 
   return Math.max(0, sessionMinutes - Number(row.totalBreakMinutes || 0));
 };
