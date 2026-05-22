@@ -163,16 +163,30 @@ const run = async () => {
   const logout = new Date(today);
   logout.setHours(18, 20, 0, 0);
 
-  await Attendance.insertMany(employees.slice(3).map((employee, index) => ({
-    employeeId: employee._id,
-    date: today,
-    loginTime: index < 4 ? login : undefined,
-    logoutTime: index < 2 ? logout : undefined,
-    totalBreakMinutes: index < 2 ? 45 : 0,
-    totalWorkingHours: index < 2 ? calculateWorkingHours(login, logout, 45) : 0,
-    status: index < 2 ? 'logged_out' : index < 4 ? 'logged_in' : 'absent',
-    remarks: 'Seed attendance'
-  })));
+  await Attendance.insertMany(employees.slice(3).map((employee, index) => {
+    const isCompletedDay = index < 2;
+    const isLoggedInDay = index < 4;
+
+    const sessions = isLoggedInDay
+      ? [{
+          loginTime: login,
+          logoutTime: isCompletedDay ? logout : undefined,
+          durationMinutes: isCompletedDay
+            ? Math.max(0, Math.round((logout.getTime() - login.getTime()) / 60000))
+            : 0
+        }]
+      : [];
+
+    return {
+      employeeId: employee._id,
+      date: today,
+      sessions,
+      totalBreakMinutes: isCompletedDay ? 45 : 0,
+      totalWorkingHours: isCompletedDay ? calculateWorkingHours(login, logout, 45) : 0,
+      status: isCompletedDay ? 'logged_out' : isLoggedInDay ? 'logged_in' : 'absent',
+      remarks: 'Seed attendance'
+    };
+  }));
 
   await Todo.insertMany(tasks.slice(0, 5).map((task, index) => ({
     employeeId: task.assignedTo,

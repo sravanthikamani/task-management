@@ -292,8 +292,11 @@ export const getAttendanceSummary = asyncHandler(async (req, res) => {
   const { employeeId } = req.query;
   let records = [];
   let totalEmployees = 1;
+  let employee = null;
+  const settings = await Settings.findOne();
   if (employeeId) {
     // Per-employee summary for the week
+    employee = await Employee.findById(employeeId);
     const startOfWeek = new Date(day);
     startOfWeek.setDate(day.getDate() - day.getDay()); // Sunday
     const endOfWeek = new Date(startOfWeek);
@@ -309,29 +312,74 @@ export const getAttendanceSummary = asyncHandler(async (req, res) => {
   // Calculate stats
   let present = 0, onLeave = 0, lateLogin = 0, earlyLogoutCount = 0, absent = 0, notMarked = 0, totalWorkingHours = 0;
   if (employeeId) {
+    const normalizedRecords = records.map((record) => normalizeAttendanceRecord(record, { employee, settings }));
+    const dayNameToIndex = {
+      sunday: 0,
+      monday: 1,
+      tuesday: 2,
+      wednesday: 3,
+      thursday: 4,
+      friday: 5,
+      saturday: 6
+    };
+
+    const configuredOffDays = Array.isArray(employee?.weeklyOffDays) ? employee.weeklyOffDays : [];
+    const offDayIndexes = configuredOffDays
+      .map((dayName) => dayNameToIndex[String(dayName || '').toLowerCase().trim()])
+      .filter((index) => Number.isInteger(index));
+
+    // Fallback to weekend off-days when employee profile has no explicit weekly-off setting.
+    const effectiveOffDayIndexes = offDayIndexes.length > 0 ? offDayIndexes : [0, 6];
+    const isWorkingDay = (date) => !effectiveOffDayIndexes.includes(date.getDay());
+
+    const startOfWeek = new Date(day);
+    startOfWeek.setDate(day.getDate() - day.getDay());
+    startOfWeek.setHours(0, 0, 0, 0);
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 7);
+
+    const workingDateKeys = new Set();
+    for (let cursor = new Date(startOfWeek); cursor < endOfWeek; cursor.setDate(cursor.getDate() + 1)) {
+      const current = new Date(cursor);
+      if (isWorkingDay(current)) {
+        workingDateKeys.add(current.toISOString().slice(0, 10));
+      }
+    }
+
     // Per-employee weekly summary
-    present = records.filter((r) => ['logged_in', 'on_break', 'logged_out', 'late'].includes(r.status)).length;
-    onLeave = records.filter((r) => r.status === 'on_leave').length;
-    lateLogin = records.filter((r) => r.status === 'late').length;
-    earlyLogoutCount = records.filter((r) => r.earlyLogout).length;
-    absent = records.filter((r) => r.status === 'absent').length;
-    const weekdayRecords = records.filter((record) => {
+    present = normalizedRecords.filter((r) => ['logged_in', 'on_break', 'logged_out', 'late'].includes(r.status)).length;
+    onLeave = normalizedRecords.filter((r) => r.status === 'on_leave').length;
+    lateLogin = normalizedRecords.filter((r) => r.status === 'late').length;
+    earlyLogoutCount = normalizedRecords.filter((r) => r.earlyLogout).length;
+    absent = normalizedRecords.filter((r) => r.status === 'absent').length;
+    const workingDayRecords = normalizedRecords.filter((record) => {
       const recordDate = new Date(record.date || record.loginTime || record.createdAt);
-      const dayOfWeek = recordDate.getDay();
-      return !Number.isNaN(recordDate.getTime()) && dayOfWeek !== 0 && dayOfWeek !== 6;
+      if (Number.isNaN(recordDate.getTime())) return false;
+      return workingDateKeys.has(recordDate.toISOString().slice(0, 10));
     });
-    totalWorkingHours = weekdayRecords.reduce((sum, r) => sum + (r.totalWorkingHours || 0), 0);
-    notMarked = 5 - weekdayRecords.length;
+
+    const recordedWorkingDateKeys = new Set(
+      workingDayRecords
+        .map((record) => new Date(record.date || record.loginTime || record.createdAt))
+        .filter((recordDate) => !Number.isNaN(recordDate.getTime()))
+        .map((recordDate) => recordDate.toISOString().slice(0, 10))
+    );
+
+    const totalWorkingDays = workingDateKeys.size;
+    const minimumWorkingHours = Number(settings?.attendanceSettings?.minimumWorkingHours ?? settings?.minimumWorkingHours ?? 8);
+
+    totalWorkingHours = workingDayRecords.reduce((sum, r) => sum + (r.totalWorkingHours || 0), 0);
+    notMarked = Math.max(0, totalWorkingDays - recordedWorkingDateKeys.size);
     res.json({
       summary: {
-        present: weekdayRecords.filter((r) => ['logged_in', 'on_break', 'logged_out', 'late'].includes(r.status)).length,
-        leaves: weekdayRecords.filter((r) => r.status === 'on_leave').length,
-        absents: weekdayRecords.filter((r) => r.status === 'absent').length + Math.max(0, notMarked),
-        lateLogin: weekdayRecords.filter((r) => r.status === 'late').length,
-        earlyLogout: weekdayRecords.filter((r) => r.earlyLogout).length,
+        present: workingDayRecords.filter((r) => ['logged_in', 'on_break', 'logged_out', 'late'].includes(r.status)).length,
+        leaves: workingDayRecords.filter((r) => r.status === 'on_leave').length,
+        absents: workingDayRecords.filter((r) => r.status === 'absent').length + notMarked,
+        lateLogin: workingDayRecords.filter((r) => r.status === 'late').length,
+        earlyLogout: workingDayRecords.filter((r) => r.earlyLogout).length,
         workingHours: Number(totalWorkingHours.toFixed(2)),
-        totalDays: 5,
-        maxWorkingHours: 40 // Assume 8h x 5d
+        totalDays: totalWorkingDays,
+        maxWorkingHours: Number((minimumWorkingHours * totalWorkingDays).toFixed(2))
       }
     });
     return;

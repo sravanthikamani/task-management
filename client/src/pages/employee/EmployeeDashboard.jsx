@@ -147,6 +147,34 @@ const isSameDate = (left, right) => {
 
 const isPresentStatus = (status) => ['logged_in', 'logged_out', 'on_break', 'late'].includes(status);
 
+const deriveHoursFromRecord = (record) => {
+  if (Number(record?.totalWorkingHours || 0) > 0) {
+    return Number(record.totalWorkingHours);
+  }
+
+  const sessions = Array.isArray(record?.sessions) ? record.sessions : [];
+  const now = new Date();
+  const recordDate = record?.date ? new Date(record.date) : null;
+  const effectiveNow = recordDate && !Number.isNaN(recordDate.getTime())
+    ? (now > new Date(recordDate.setHours(23, 59, 59, 999)) ? new Date(recordDate) : now)
+    : now;
+
+  const minutes = sessions.reduce((sum, session) => {
+    if (!session?.loginTime) return sum;
+    if (typeof session.durationMinutes === 'number' && session.durationMinutes > 0) {
+      return sum + session.durationMinutes;
+    }
+
+    const sessionEnd = session.logoutTime ? new Date(session.logoutTime) : effectiveNow;
+    const sessionStart = new Date(session.loginTime);
+    if (Number.isNaN(sessionStart.getTime()) || Number.isNaN(sessionEnd.getTime())) return sum;
+
+    return sum + Math.max(0, Math.round((sessionEnd.getTime() - sessionStart.getTime()) / 60000));
+  }, 0);
+
+  return Number((Math.max(0, minutes - Number(record?.totalBreakMinutes || 0)) / 60).toFixed(2));
+};
+
 const businessDaysInMonth = (year, month) => {
   const days = new Date(year, month + 1, 0).getDate();
   let count = 0;
@@ -177,11 +205,12 @@ const EmployeeDashboard = () => {
   };
 
   const loadWeeklySummary = async () => {
-    const res = await attendanceService.history();
-    const records = res.data?.records || [];
     const now = new Date();
     const weekStart = getStartOfWeek(now);
     const weekEnd = getEndOfWeek(now);
+
+    const res = await attendanceService.history();
+    const records = res.data?.records || [];
 
     const weekRecords = records.filter((item) => {
       const itemDate = new Date(item.date);
@@ -193,7 +222,7 @@ const EmployeeDashboard = () => {
     const leaves = weekRecords.filter((r) => r.status === 'on_leave').length;
     const absents = weekRecords.filter((r) => r.status === 'absent').length;
     const lateDays = weekRecords.filter((r) => r.status === 'late').length;
-    const workingHours = weekRecords.reduce((sum, r) => sum + Number(r.totalWorkingHours || 0), 0);
+    const workingHours = weekRecords.reduce((sum, r) => sum + deriveHoursFromRecord(r), 0);
     const totalDays = 5;
 
     setWeekSummary({
@@ -225,6 +254,35 @@ const EmployeeDashboard = () => {
   });
   const [message, setMessage] = useState('');
   const [checkedTaskIds, setCheckedTaskIds] = useState(() => new Set());
+
+  const syncTodayAttendance = async () => {
+    try {
+      const todayRes = await attendanceService.today();
+      const todayAttendance = todayRes.data?.attendance || null;
+      const todayStatus = todayRes.data?.status || todayAttendance?.status || 'not_logged_in';
+
+      setData((current) => {
+        if (!current) return current;
+
+        const mergedLoginLogout = {
+          ...(current.loginLogout || {}),
+          ...(todayAttendance || {}),
+          status: todayStatus
+        };
+
+        return {
+          ...current,
+          welcome: {
+            ...(current.welcome || {}),
+            currentStatus: todayStatus
+          },
+          loginLogout: mergedLoginLogout
+        };
+      });
+    } catch {
+      // Keep existing dashboard state when background sync fails.
+    }
+  };
 
   const buildFallbackDashboard = async () => {
     const [attendanceRes, tasksRes, projectsRes, updatesRes, notificationsRes] = await Promise.all([
@@ -306,24 +364,57 @@ const EmployeeDashboard = () => {
     setLoading(true);
     setMessage('');
 
-    const applyPayload = (payload) => {
-      setData(payload);
+    const applyPayload = (payload, todayAttendance = null, todayStatus = null) => {
+      const mergedLoginLogout = {
+        ...(payload.loginLogout || {}),
+        ...(todayAttendance || {})
+      };
+
+      const mergedPayload = {
+        ...payload,
+        welcome: {
+          ...(payload.welcome || {}),
+          currentStatus: todayStatus || todayAttendance?.status || payload?.welcome?.currentStatus || 'not_logged_in'
+        },
+        loginLogout: {
+          ...mergedLoginLogout,
+          status: todayStatus || todayAttendance?.status || mergedLoginLogout.status || 'not_logged_in'
+        }
+      };
+
+      setData(mergedPayload);
       setDailyForm((prev) => ({
-        workDescription: payload.todayWorkUpdate?.workDescription || prev.workDescription,
-        timeSpent: payload.todayWorkUpdate?.timeSpent ?? prev.timeSpent,
-        blockers: payload.todayWorkUpdate?.blockers || prev.blockers,
-        tomorrowPlan: payload.todayWorkUpdate?.tomorrowPlan || prev.tomorrowPlan
+        workDescription: mergedPayload.todayWorkUpdate?.workDescription || prev.workDescription,
+        timeSpent: mergedPayload.todayWorkUpdate?.timeSpent ?? prev.timeSpent,
+        blockers: mergedPayload.todayWorkUpdate?.blockers || prev.blockers,
+        tomorrowPlan: mergedPayload.todayWorkUpdate?.tomorrowPlan || prev.tomorrowPlan
       }));
     };
 
     const loadFallback = async () => {
-      const fallbackPayload = await buildFallbackDashboard();
-      applyPayload(fallbackPayload);
+      const [fallbackPayload, todayRes] = await Promise.all([
+        buildFallbackDashboard(),
+        attendanceService.today()
+      ]);
+
+      applyPayload(
+        fallbackPayload,
+        todayRes.data?.attendance || null,
+        todayRes.data?.status || null
+      );
     };
 
     try {
-      const { data: payload } = await dashboardService.getEmployeeOverview();
-      applyPayload(payload);
+      const [{ data: payload }, todayRes] = await Promise.all([
+        dashboardService.getEmployeeOverview(),
+        attendanceService.today()
+      ]);
+
+      applyPayload(
+        payload,
+        todayRes.data?.attendance || null,
+        todayRes.data?.status || null
+      );
     } catch (error) {
       try {
         await loadFallback();
@@ -337,6 +428,23 @@ const EmployeeDashboard = () => {
 
   useEffect(() => {
     loadDashboard();
+  }, []);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      syncTodayAttendance();
+    };
+
+    const intervalId = window.setInterval(() => {
+      syncTodayAttendance();
+    }, 20000);
+
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+    };
   }, []);
 
   const attendance = data?.loginLogout || {};

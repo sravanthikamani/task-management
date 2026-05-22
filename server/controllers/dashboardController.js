@@ -23,6 +23,61 @@ const endOfDay = (date = new Date()) => {
   return value;
 };
 
+const getSessions = (record) => {
+  const sessions = Array.isArray(record?.sessions) ? record.sessions : [];
+  if (sessions.length > 0) return sessions;
+
+  // Backward compatibility for legacy records.
+  if (record?.loginTime) {
+    return [{
+      loginTime: record.loginTime,
+      logoutTime: record.logoutTime || null,
+      durationMinutes: Number(record?.totalWorkingHours || 0) > 0
+        ? Math.round(Number(record.totalWorkingHours) * 60)
+        : 0
+    }];
+  }
+
+  return [];
+};
+
+const getFirstSession = (record) => {
+  const sessions = getSessions(record);
+  return sessions.length > 0 ? sessions[0] : null;
+};
+
+const getLastSession = (record) => {
+  const sessions = getSessions(record);
+  return sessions.length > 0 ? sessions[sessions.length - 1] : null;
+};
+
+const deriveWorkingHours = (record) => {
+  if (Number(record?.totalWorkingHours || 0) > 0) {
+    return Number(record.totalWorkingHours);
+  }
+
+  const sessions = getSessions(record);
+  const totalMinutes = sessions.reduce((sum, session) => {
+    if (typeof session?.durationMinutes === 'number' && session.durationMinutes > 0) {
+      return sum + session.durationMinutes;
+    }
+
+    if (!session?.loginTime || !session?.logoutTime) {
+      return sum;
+    }
+
+    const start = new Date(session.loginTime);
+    const end = new Date(session.logoutTime);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return sum;
+    }
+
+    return sum + Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+  }, 0);
+
+  return Number((Math.max(0, totalMinutes - Number(record?.totalBreakMinutes || 0)) / 60).toFixed(2));
+};
+
 const projectStatusGroup = (project) => {
   const today = startOfDay();
   const deadline = project.deadline ? new Date(project.deadline) : null;
@@ -72,8 +127,14 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
     .lean();
 
   const activeEmployeesToday = todayAttendance.filter(a => a.status !== 'absent' && a.status !== 'on_leave').length;
-  const loggedInCount = todayAttendance.filter(a => a.loginTime).length;
-  const loggedOutCount = todayAttendance.filter(a => a.logoutTime).length;
+  const loggedInCount = todayAttendance.filter((record) => {
+    const firstSession = getFirstSession(record);
+    return Boolean(firstSession?.loginTime || record?.loginTime);
+  }).length;
+  const loggedOutCount = todayAttendance.filter((record) => {
+    const lastSession = getLastSession(record);
+    return Boolean(lastSession?.logoutTime || record?.logoutTime);
+  }).length;
   const absentCount = todayAttendance.filter(a => a.status === 'absent').length;
 
   // 3. Get all projects
@@ -205,14 +266,19 @@ export const getAttendanceOverview = asyncHandler(async (req, res) => {
     .lean()
     .limit(50);
 
-  const formattedAttendance = attendance.map(record => ({
-    _id: record._id,
-    employee: record.employeeId?.userId?.name || 'Unknown',
-    loginTime: record.loginTime || null,
-    logoutTime: record.logoutTime || null,
-    totalWorkingHours: Number(record.totalWorkingHours || 0).toFixed(2),
-    status: record.status
-  }));
+  const formattedAttendance = attendance.map((record) => {
+    const firstSession = getFirstSession(record);
+    const lastSession = getLastSession(record);
+
+    return {
+      _id: record._id,
+      employee: record.employeeId?.userId?.name || 'Unknown',
+      loginTime: firstSession?.loginTime || record.loginTime || null,
+      logoutTime: lastSession?.logoutTime || record.logoutTime || null,
+      totalWorkingHours: deriveWorkingHours(record).toFixed(2),
+      status: record.status
+    };
+  });
 
   res.json({
     attendance: formattedAttendance,
