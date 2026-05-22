@@ -10,6 +10,7 @@ import LeaveRequest from '../models/LeaveRequest.js';
 import DailyWorkUpdate from '../models/DailyWorkUpdate.js';
 import Todo from '../models/Todo.js';
 import { dateOnly } from '../utils/calculateHours.js';
+import { getAppDayRange } from '../utils/attendanceDate.js';
 
 const startOfDay = (date = new Date()) => {
   const value = new Date(date);
@@ -522,12 +523,10 @@ export const getEmployeeDashboardOverview = asyncHandler(async (req, res) => {
     throw new Error('Employee profile required');
   }
 
-  const today = dateOnly(new Date());
-  const nextDay = new Date(today);
-  nextDay.setDate(nextDay.getDate() + 1);
+  const { start: today, end: nextDay } = getAppDayRange(new Date());
 
   const [attendance, tasks, projectMembers, todos, dailyUpdate, notifications] = await Promise.all([
-    Attendance.findOne({ employeeId: req.employee._id, date: today }),
+    Attendance.findOne({ employeeId: req.employee._id, date: { $gte: today, $lt: nextDay } }).sort({ date: -1, createdAt: -1 }),
     Task.find({ assignedTo: req.employee._id })
       .populate('projectId', 'name deadline')
       .sort({ dueDate: 1, createdAt: -1 })

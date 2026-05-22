@@ -3,6 +3,7 @@ import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
 import Settings from '../models/Settings.js';
 import { calculateWorkingHours, dateOnly, minutesBetween } from '../utils/calculateHours.js';
+import { getAppDateKey, getAppDayRange } from '../utils/attendanceDate.js';
 
 const parseHourMinute = (value, fallback = '09:30') => {
   const source = typeof value === 'string' && value.includes(':') ? value : fallback;
@@ -48,6 +49,11 @@ const getEffectiveNowForRecord = (attendance, now = new Date()) => {
   const dayEnd = new Date(recordDate);
   dayEnd.setHours(23, 59, 59, 999);
   return now > dayEnd ? dayEnd : now;
+};
+
+const getDayRange = (value = new Date()) => {
+  const { start, end } = getAppDayRange(value);
+  return { start, end };
 };
 
 const getAttendanceSessions = (attendance) => {
@@ -120,6 +126,40 @@ const normalizeAttendanceRecord = (record, options = {}) => {
   };
 };
 
+const dedupeAttendanceByDay = (records = [], options = {}) => {
+  const byDay = new Map();
+
+  records.forEach((record) => {
+    const normalized = normalizeAttendanceRecord(record, options);
+    const recordDate = new Date(normalized?.date || normalized?.loginTime || normalized?.createdAt);
+    if (Number.isNaN(recordDate.getTime())) {
+      return;
+    }
+
+    const dayKey = getAppDateKey(recordDate);
+    if (!dayKey) {
+      return;
+    }
+    const current = byDay.get(dayKey);
+    if (!current) {
+      byDay.set(dayKey, normalized);
+      return;
+    }
+
+    const currentUpdated = new Date(current.updatedAt || current.createdAt || current.date || 0).getTime();
+    const nextUpdated = new Date(normalized.updatedAt || normalized.createdAt || normalized.date || 0).getTime();
+    if (nextUpdated > currentUpdated) {
+      byDay.set(dayKey, normalized);
+    }
+  });
+
+  return [...byDay.values()].sort((left, right) => {
+    const leftDate = new Date(left.date || left.createdAt || 0).getTime();
+    const rightDate = new Date(right.date || right.createdAt || 0).getTime();
+    return rightDate - leftDate;
+  });
+};
+
 const requireEmployee = (req) => {
   if (!req.employee) {
     throw new Error('Employee profile required for attendance');
@@ -129,8 +169,9 @@ const requireEmployee = (req) => {
 
 export const attendanceLogin = asyncHandler(async (req, res) => {
   const employee = requireEmployee(req);
-  const today = dateOnly();
-  const attendance = await Attendance.findOne({ employeeId: employee._id, date: today }) || new Attendance({ employeeId: employee._id, date: today });
+  const { start, end } = getDayRange();
+  const attendance = await Attendance.findOne({ employeeId: employee._id, date: { $gte: start, $lt: end } }).sort({ date: -1, createdAt: -1 })
+    || new Attendance({ employeeId: employee._id, date: start });
 
   // If last session is open (no logout), block new login
   const lastSession = attendance.sessions.length > 0 ? attendance.sessions[attendance.sessions.length - 1] : null;
@@ -142,7 +183,7 @@ export const attendanceLogin = asyncHandler(async (req, res) => {
   const settings = await Settings.findOne();
   const now = new Date();
   const lateThreshold = resolveLateThreshold(employee, settings);
-  const lateDate = dateAtTime(today, lateThreshold, '09:30');
+  const lateDate = dateAtTime(start, lateThreshold, '09:30');
 
   attendance.sessions.push({ loginTime: now });
   attendance.status = now > lateDate ? 'late' : 'logged_in';
@@ -155,7 +196,8 @@ export const attendanceLogin = asyncHandler(async (req, res) => {
 
 export const attendanceLogout = asyncHandler(async (req, res) => {
   const employee = requireEmployee(req);
-  const attendance = await Attendance.findOne({ employeeId: employee._id, date: dateOnly() });
+  const { start, end } = getDayRange();
+  const attendance = await Attendance.findOne({ employeeId: employee._id, date: { $gte: start, $lt: end } }).sort({ date: -1, createdAt: -1 });
 
   if (!attendance || attendance.sessions.length === 0) {
     res.status(400);
@@ -170,7 +212,7 @@ export const attendanceLogout = asyncHandler(async (req, res) => {
   const now = new Date();
   const settings = await Settings.findOne();
   const earlyEndTime = employee.shiftEndTime || settings?.attendanceSettings?.workEndTime || settings?.workEndTime || '18:30';
-  const shiftEnd = dateAtTime(dateOnly(), earlyEndTime, '18:30');
+  const shiftEnd = dateAtTime(start, earlyEndTime, '18:30');
 
   lastSession.logoutTime = now;
   lastSession.durationMinutes = Math.max(0, Math.round((now - new Date(lastSession.loginTime)) / 60000));
@@ -186,7 +228,8 @@ export const attendanceLogout = asyncHandler(async (req, res) => {
 
 export const breakStart = asyncHandler(async (req, res) => {
   const employee = requireEmployee(req);
-  const attendance = await Attendance.findOne({ employeeId: employee._id, date: dateOnly() });
+  const { start, end } = getDayRange();
+  const attendance = await Attendance.findOne({ employeeId: employee._id, date: { $gte: start, $lt: end } }).sort({ date: -1, createdAt: -1 });
   if (!attendance?.loginTime || attendance.logoutTime) {
     res.status(400);
     throw new Error('Break can start only after login and before logout');
@@ -204,16 +247,17 @@ export const breakStart = asyncHandler(async (req, res) => {
 
 export const breakEnd = asyncHandler(async (req, res) => {
   const employee = requireEmployee(req);
-  const attendance = await Attendance.findOne({ employeeId: employee._id, date: dateOnly() });
+  const { start, end } = getDayRange();
+  const attendance = await Attendance.findOne({ employeeId: employee._id, date: { $gte: start, $lt: end } }).sort({ date: -1, createdAt: -1 });
   if (!attendance?.breakStartTime || attendance.breakEndTime) {
     res.status(400);
     throw new Error('Break start is required before break end');
   }
-  const end = new Date();
-  attendance.breakEndTime = end;
-  const mins = minutesBetween(attendance.breakStartTime, end);
+  const breakEndedAt = new Date();
+  attendance.breakEndTime = breakEndedAt;
+  const mins = minutesBetween(attendance.breakStartTime, breakEndedAt);
   attendance.totalBreakMinutes += mins;
-  attendance.breaks.push({ startTime: attendance.breakStartTime, endTime: end, durationMinutes: mins });
+  attendance.breaks.push({ startTime: attendance.breakStartTime, endTime: breakEndedAt, durationMinutes: mins });
   attendance.status = 'logged_in';
   await attendance.save();
   res.json({ attendance });
@@ -221,7 +265,8 @@ export const breakEnd = asyncHandler(async (req, res) => {
 
 export const getTodayAttendance = asyncHandler(async (req, res) => {
   const employee = requireEmployee(req);
-  const attendance = await Attendance.findOne({ employeeId: employee._id, date: dateOnly() });
+  const { start, end } = getDayRange();
+  const attendance = await Attendance.findOne({ employeeId: employee._id, date: { $gte: start, $lt: end } }).sort({ date: -1, createdAt: -1 });
   const settings = await Settings.findOne();
   const normalized = attendance ? normalizeAttendanceRecord(attendance, { employee, settings }) : null;
 
@@ -233,7 +278,7 @@ export const getAttendanceHistory = asyncHandler(async (req, res) => {
   const records = await Attendance.find({ employeeId: employee._id }).sort({ date: -1 });
   const settings = await Settings.findOne();
 
-  res.json({ records: records.map((record) => normalizeAttendanceRecord(record, { employee, settings })) });
+  res.json({ records: dedupeAttendanceByDay(records, { employee, settings }) });
 });
 
 export const getAdminAttendance = asyncHandler(async (req, res) => {

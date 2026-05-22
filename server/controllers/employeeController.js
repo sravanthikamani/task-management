@@ -5,7 +5,7 @@ import Attendance from '../models/Attendance.js';
 import ProjectMember from '../models/ProjectMember.js';
 import Task from '../models/Task.js';
 import DailyWorkUpdate from '../models/DailyWorkUpdate.js';
-import { dateOnly } from '../utils/calculateHours.js';
+import { getAppDateKey, getAppDayRange } from '../utils/attendanceDate.js';
 
 const minutesBetween = (start, end) => {
   if (!start || !end) return 0;
@@ -91,6 +91,40 @@ const normalizeAttendanceRecord = (record, employee = null) => {
     totalWorkingHours: source.totalWorkingHours > 0 ? source.totalWorkingHours : fallbackHours,
     status: normalizedStatus
   };
+};
+
+const dedupeAttendanceHistoryByDay = (records = [], employee = null) => {
+  const byDay = new Map();
+
+  records.forEach((record) => {
+    const normalized = normalizeAttendanceRecord(record, employee);
+    const recordDate = new Date(normalized?.date || normalized?.loginTime || normalized?.createdAt);
+    if (Number.isNaN(recordDate.getTime())) {
+      return;
+    }
+
+    const dayKey = getAppDateKey(recordDate);
+    if (!dayKey) {
+      return;
+    }
+    const existing = byDay.get(dayKey);
+    if (!existing) {
+      byDay.set(dayKey, normalized);
+      return;
+    }
+
+    const existingUpdated = new Date(existing.updatedAt || existing.createdAt || existing.date || 0).getTime();
+    const nextUpdated = new Date(normalized.updatedAt || normalized.createdAt || normalized.date || 0).getTime();
+    if (nextUpdated > existingUpdated) {
+      byDay.set(dayKey, normalized);
+    }
+  });
+
+  return [...byDay.values()].sort((left, right) => {
+    const leftDate = new Date(left.date || left.createdAt || 0).getTime();
+    const rightDate = new Date(right.date || right.createdAt || 0).getTime();
+    return rightDate - leftDate;
+  });
 };
 
 const selfProfilePayload = (employee, user) => ({
@@ -279,9 +313,7 @@ export const getEmployeeProfile = asyncHandler(async (req, res) => {
   }
 
   const employeeId = employee._id;
-  const todayStart = dateOnly();
-  const todayEnd = new Date(todayStart);
-  todayEnd.setDate(todayEnd.getDate() + 1);
+  const { start: todayStart, end: todayEnd } = getAppDayRange();
 
   const [todayAttendance, attendanceHistory, projectMembers, tasks, dailyUpdates] = await Promise.all([
     Attendance.findOne({ employeeId, date: { $gte: todayStart, $lt: todayEnd } }).sort({ date: -1 }),
@@ -302,7 +334,7 @@ export const getEmployeeProfile = asyncHandler(async (req, res) => {
   res.json({
     employee,
     todayAttendance: normalizeAttendanceRecord(todayAttendance, employee),
-    attendanceHistory: attendanceHistory.map((record) => normalizeAttendanceRecord(record, employee)),
+    attendanceHistory: dedupeAttendanceHistoryByDay(attendanceHistory, employee),
     projects: projectMembers
       .filter((pm) => pm.projectId)
       .map((pm) => ({
