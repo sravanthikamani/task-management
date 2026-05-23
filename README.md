@@ -1,6 +1,6 @@
 # Employee Workspace Management System
 
-A MERN stack employee workspace management starter using React, Node.js, Express.js, MongoDB, Tailwind CSS, CSS, and React Context API.
+An employee workspace management starter using React, Node.js, Express.js, MongoDB, Tailwind CSS, CSS, and React Context API.
 
 ## Project Structure
 
