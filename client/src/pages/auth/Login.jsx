@@ -90,6 +90,7 @@ const Login = () => {
           </div>
           <button className="btn-primary w-full" disabled={submitting} type="submit">{submitting ? 'Signing in...' : 'Login'}</button>
        <p>Testing</p> 
+          <p>Testing2</p>
         </form>
       </section>
     </main>
