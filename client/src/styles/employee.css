@@ -1591,6 +1591,22 @@
   grid-template-columns: auto minmax(0, 1fr);
   gap: 0.9rem;
   align-items: flex-start;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease, transform 0.18s ease;
+}
+
+.employee-page .employee-notification-item:hover {
+  border-color: #bfdbfe;
+  background: #f1f5f9;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.employee-page .employee-notification-item:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+  border-color: #93c5fd;
+  background: #eff6ff;
 }
 
 .employee-page .employee-notification-dot {

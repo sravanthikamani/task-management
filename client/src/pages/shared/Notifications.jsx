@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import NotificationItem from '../../components/notifications/NotificationItem.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useNotifications } from '../../context/NotificationContext.jsx';
@@ -118,6 +118,7 @@ const sectionThemeMap = {
 
 const Notifications = ({ title = 'Notifications' }) => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const { notifications, loadNotifications, markRead, removeNotification } = useNotifications();
   const [openSections, setOpenSections] = useState(() => new Set());
@@ -128,6 +129,16 @@ const Notifications = ({ title = 'Notifications' }) => {
   useEffect(() => {
     loadNotifications().catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const targetSection = new URLSearchParams(location.search).get('section');
+    if (!targetSection) return;
+
+    const sectionExists = activeSections.some((section) => section.key === targetSection);
+    if (!sectionExists) return;
+
+    setOpenSections(new Set([targetSection]));
+  }, [activeSections, location.search]);
 
   const grouped = useMemo(() => {
     const bucket = activeSections.reduce((accumulator, section) => ({ ...accumulator, [section.key]: [] }), {});

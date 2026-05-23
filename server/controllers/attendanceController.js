@@ -1,6 +1,7 @@
 import asyncHandler from 'express-async-handler';
 import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
+import LeaveRequest from '../models/LeaveRequest.js';
 import Settings from '../models/Settings.js';
 import { calculateWorkingHours, dateOnly, minutesBetween } from '../utils/calculateHours.js';
 import { getAppDateAtHourMinute, getAppDateKey, getAppDayRange } from '../utils/attendanceDate.js';
@@ -401,23 +402,49 @@ export const getAttendanceSummary = asyncHandler(async (req, res) => {
       return workingDateKeys.has(recordDate.toISOString().slice(0, 10));
     });
 
-    const recordedWorkingDateKeys = new Set(
+    const totalWorkingDays = workingDateKeys.size;
+    const minimumWorkingHours = Number(settings?.attendanceSettings?.minimumWorkingHours ?? settings?.minimumWorkingHours ?? 8);
+
+    const overlappingApprovedLeaves = await LeaveRequest.find({
+      employeeId,
+      status: 'approved',
+      fromDate: { $lte: new Date(endOfWeek.getTime() - 1) },
+      toDate: { $gte: startOfWeek }
+    }).select('fromDate toDate');
+
+    const approvedLeaveDateKeys = new Set();
+    overlappingApprovedLeaves.forEach((leave) => {
+      const leaveStart = new Date(leave.fromDate);
+      const leaveEnd = new Date(leave.toDate);
+      if (Number.isNaN(leaveStart.getTime()) || Number.isNaN(leaveEnd.getTime())) return;
+
+      for (const cursor = new Date(leaveStart); cursor <= leaveEnd; cursor.setDate(cursor.getDate() + 1)) {
+        const current = new Date(cursor);
+        const key = current.toISOString().slice(0, 10);
+        if (workingDateKeys.has(key)) {
+          approvedLeaveDateKeys.add(key);
+        }
+      }
+    });
+
+    const attendedDateKeys = new Set(
       workingDayRecords
+        .filter((record) => ['logged_in', 'on_break', 'logged_out', 'late'].includes(record.status))
         .map((record) => new Date(record.date || record.loginTime || record.createdAt))
         .filter((recordDate) => !Number.isNaN(recordDate.getTime()))
         .map((recordDate) => recordDate.toISOString().slice(0, 10))
     );
 
-    const totalWorkingDays = workingDateKeys.size;
-    const minimumWorkingHours = Number(settings?.attendanceSettings?.minimumWorkingHours ?? settings?.minimumWorkingHours ?? 8);
-
     totalWorkingHours = workingDayRecords.reduce((sum, r) => sum + (r.totalWorkingHours || 0), 0);
-    notMarked = Math.max(0, totalWorkingDays - recordedWorkingDateKeys.size);
+    const leaveDays = [...approvedLeaveDateKeys].filter((dayKey) => !attendedDateKeys.has(dayKey)).length;
+    const inferredAbsentDays = [...workingDateKeys].filter((dayKey) => !attendedDateKeys.has(dayKey) && !approvedLeaveDateKeys.has(dayKey)).length;
+    notMarked = inferredAbsentDays;
+
     res.json({
       summary: {
-        present: workingDayRecords.filter((r) => ['logged_in', 'on_break', 'logged_out', 'late'].includes(r.status)).length,
-        leaves: workingDayRecords.filter((r) => r.status === 'on_leave').length,
-        absents: workingDayRecords.filter((r) => r.status === 'absent').length + notMarked,
+        present: attendedDateKeys.size,
+        leaves: leaveDays,
+        absents: inferredAbsentDays,
         lateLogin: workingDayRecords.filter((r) => r.status === 'late').length,
         earlyLogout: workingDayRecords.filter((r) => r.earlyLogout).length,
         workingHours: Number(totalWorkingHours.toFixed(2)),

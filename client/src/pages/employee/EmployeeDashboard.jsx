@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 // Helper for attendance summary colors
 const summaryColors = {
   present: '#2563eb', // blue
@@ -186,6 +187,7 @@ const businessDaysInMonth = (year, month) => {
 };
 
 const EmployeeDashboard = () => {
+  const navigate = useNavigate();
 
   // Weekly summary state
   const [weekSummary, setWeekSummary] = useState(null);
@@ -208,6 +210,25 @@ const EmployeeDashboard = () => {
     const now = new Date();
     const weekStart = getStartOfWeek(now);
     const weekEnd = getEndOfWeek(now);
+
+    try {
+      const summaryRes = await attendanceService.employeeSummary({ date: now.toISOString() });
+      const summary = summaryRes.data?.summary || {};
+
+      setWeekSummary({
+        present: Number(summary.present || 0),
+        leaves: Number(summary.leaves || 0),
+        absents: Number(summary.absents || 0),
+        lateDays: Number(summary.lateLogin || 0),
+        workingHours: Number(Number(summary.workingHours || 0).toFixed(2)),
+        totalDays: Number(summary.totalDays || 5),
+        maxWorkingHours: Number(summary.maxWorkingHours || 40),
+        weekLabel: `${weekStart.toLocaleDateString([], { month: 'short', day: 'numeric' })} - ${new Date(weekEnd - 1).toLocaleDateString([], { month: 'short', day: 'numeric' })}`
+      });
+      return;
+    } catch {
+      // Fall back to local calculation if weekly summary API is unavailable.
+    }
 
     const res = await attendanceService.history();
     const records = res.data?.records || [];
@@ -279,6 +300,8 @@ const EmployeeDashboard = () => {
           loginLogout: mergedLoginLogout
         };
       });
+
+      await loadWeeklySummary();
     } catch {
       // Keep existing dashboard state when background sync fails.
     }
@@ -561,6 +584,10 @@ const EmployeeDashboard = () => {
 
     return list.filter((item) => item?.isRead === false || item?.read === false || !item?.readAt).length;
   }, [data?.notifications?.all]);
+
+  const handleNotificationSectionClick = (sectionKey) => {
+    navigate(`/employee/notifications?section=${encodeURIComponent(sectionKey)}`);
+  };
 
   const toggleTaskChecked = (taskId) => {
     setCheckedTaskIds((current) => {
@@ -990,7 +1017,19 @@ const EmployeeDashboard = () => {
 
           <div className="employee-notifications-list">
             {notificationCards.map((item) => (
-              <article className="employee-notification-item" key={item.key}>
+              <article
+                className="employee-notification-item"
+                key={item.key}
+                onClick={() => handleNotificationSectionClick(item.key)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    handleNotificationSectionClick(item.key);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+              >
                 <span className={`employee-notification-dot ${item.toneClass}`} />
                 <div className="employee-notification-content">
                   <div className="employee-notification-item-head">
