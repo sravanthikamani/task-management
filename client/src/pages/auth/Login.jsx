@@ -89,6 +89,7 @@ const Login = () => {
             <Link className="font-bold text-blue-700 transition hover:text-blue-800" to="/forgot-password">Forgot password?</Link>
           </div>
           <button className="btn-primary w-full" disabled={submitting} type="submit">{submitting ? 'Signing in...' : 'Login'}</button>
+       <p>Testing</p> 
         </form>
       </section>
     </main>
